@@ -1,0 +1,11 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5433/booking_ticket
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:Thanh0962578061}
+
+  jpa:
+    show-sql: true
+
+  flyway:
+    clean-disabled: false

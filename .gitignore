@@ -1,0 +1,30 @@
+# === IDE ===
+.idea/
+*.iml
+*.iws
+.vscode/
+
+# === Build ===
+target/
+build/
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# === Maven ===
+.mvn/wrapper/maven-wrapper.jar
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Logs ===
+*.log
+
+# === Environment / Secrets ===
+.env
+*.p12
+*.jks
+*.pem
+
+# === Agent config (local AI tools) ===
+.agent/

@@ -1,0 +1,653 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Concert Ticket Booking Platform API",
+    "description": "Backend APIs for Concert Ticket Booking Platform — Technical Assessment GI Summer 2026.\n\n## Authentication\n- **Customer APIs**: Header `X-User-Id: {uuid}`\n- **Admin APIs**: Header `X-Role: ADMIN`\n- **Webhook APIs**: No authentication (internal network)\n- **Public APIs**: No authentication\n\n## Currency\nAll monetary values are `Long` integers in VND (e.g., 500000 = 500,000 VNĐ).",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Booking Ticket Team"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "Local development server"
+    }
+  ],
+  "tags": [
+    {"name": "Concert", "description": "Public concert browsing APIs"},
+    {"name": "Ticket", "description": "Public ticket category APIs"},
+    {"name": "Booking", "description": "Customer ticket booking APIs"},
+    {"name": "Admin Booking", "description": "Admin booking management APIs"},
+    {"name": "Webhook", "description": "Payment gateway webhook APIs"}
+  ],
+  "paths": {
+    "/api/v1/concerts": {
+      "get": {
+        "tags": ["Concert"],
+        "summary": "List published concerts",
+        "description": "Returns a paginated list of concerts with status PUBLISHED",
+        "operationId": "listConcerts",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number (0-based)",
+            "required": false,
+            "schema": {"type": "integer", "default": 0}
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {"type": "integer", "default": 10}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Concerts retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageConcertSummaryResponse"
+                },
+                "example": {
+                  "content": [
+                    {
+                      "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                      "name": "Rock Festival 2026",
+                      "venue": "Stadium A",
+                      "startTime": "2026-07-01T19:00:00",
+                      "endTime": "2026-07-01T23:00:00",
+                      "status": "PUBLISHED"
+                    }
+                  ],
+                  "page": 0,
+                  "size": 10,
+                  "totalElements": 1,
+                  "totalPages": 1,
+                  "last": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/concerts/{concertId}": {
+      "get": {
+        "tags": ["Concert"],
+        "summary": "Get concert detail",
+        "description": "Returns concert information including all ticket categories. Response is cached in Redis (TTL 600s).",
+        "operationId": "getConcertDetail",
+        "parameters": [
+          {
+            "name": "concertId",
+            "in": "path",
+            "required": true,
+            "description": "Concert UUID",
+            "schema": {"type": "string", "format": "uuid"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Concert found",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ConcertDetailResponse"},
+                "example": {
+                  "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                  "name": "Rock Festival 2026",
+                  "description": "Epic rock concert featuring top artists",
+                  "venue": "Stadium A",
+                  "startTime": "2026-07-01T19:00:00",
+                  "endTime": "2026-07-01T23:00:00",
+                  "status": "PUBLISHED",
+                  "ticketCategories": [
+                    {
+                      "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb01",
+                      "name": "VIP",
+                      "priceAmount": 2000000,
+                      "currency": "VND",
+                      "totalQuantity": 100,
+                      "availableQuantity": 98,
+                      "status": "ACTIVE"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Concert not found",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ErrorResponse"},
+                "example": {
+                  "timestamp": "2026-05-21T12:00:00",
+                  "status": 404,
+                  "error": "Not Found",
+                  "message": "Concert not found: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                  "path": "/api/v1/concerts/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tickets/{ticketCategoryId}": {
+      "get": {
+        "tags": ["Ticket"],
+        "summary": "Get ticket category detail",
+        "description": "Returns ticket category detail with cached availability. Uses Redis split cache: static (name, price) + dynamic (availableQuantity).",
+        "operationId": "getTicketCategory",
+        "parameters": [
+          {
+            "name": "ticketCategoryId",
+            "in": "path",
+            "required": true,
+            "description": "Ticket category UUID",
+            "schema": {"type": "string", "format": "uuid"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ticket category found",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TicketCategoryResponse"},
+                "example": {
+                  "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb01",
+                  "name": "VIP",
+                  "priceAmount": 2000000,
+                  "currency": "VND",
+                  "totalQuantity": 100,
+                  "availableQuantity": 98,
+                  "status": "ACTIVE"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ticket category not found"
+          }
+        }
+      }
+    },
+    "/api/v1/bookings/reserve": {
+      "post": {
+        "tags": ["Booking"],
+        "summary": "Reserve tickets",
+        "description": "Creates a PENDING booking with 15-minute expiry. Supports optional voucher code for discounts.\n\n**Duplicate Prevention**: Uses X-Idempotency-Key (Redis SETNX) + DB unique constraint.",
+        "operationId": "reserveTickets",
+        "parameters": [
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": true,
+            "description": "User UUID",
+            "schema": {"type": "string", "format": "uuid"},
+            "example": "11111111-1111-1111-1111-111111111111"
+          },
+          {
+            "name": "X-Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Unique idempotency key for duplicate prevention",
+            "schema": {"type": "string"},
+            "example": "order-20260521-001"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ReserveBookingRequest"},
+              "examples": {
+                "without_voucher": {
+                  "summary": "Reserve 2 VIP tickets",
+                  "value": {
+                    "concertId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "items": [
+                      {
+                        "ticketCategoryId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb01",
+                        "quantity": 2
+                      }
+                    ]
+                  }
+                },
+                "with_voucher": {
+                  "summary": "Reserve with voucher discount",
+                  "value": {
+                    "concertId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "items": [
+                      {
+                        "ticketCategoryId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb02",
+                        "quantity": 3
+                      }
+                    ],
+                    "voucherCode": "SUMMER2026"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Booking created successfully",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/BookingResponse"},
+                "example": {
+                  "id": "d1234567-abcd-efgh-ijkl-000000000001",
+                  "status": "PENDING",
+                  "subtotalAmount": 4000000,
+                  "discountAmount": 0,
+                  "totalAmount": 4000000,
+                  "currency": "VND",
+                  "expiresAt": "2026-05-21T12:15:00"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error, insufficient tickets, or duplicate request",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ErrorResponse"},
+                "example": {
+                  "timestamp": "2026-05-21T12:00:00",
+                  "status": 400,
+                  "error": "Bad Request",
+                  "message": "Vé VIP đã bán hết hoặc không đủ số lượng.",
+                  "path": "/api/v1/bookings/reserve"
+                }
+              }
+            }
+          },
+          "404": {"description": "Concert or ticket category not found"},
+          "409": {"description": "Duplicate booking (idempotency conflict)"}
+        }
+      }
+    },
+    "/api/v1/bookings/{bookingId}": {
+      "get": {
+        "tags": ["Booking"],
+        "summary": "Get booking detail",
+        "description": "Returns booking detail including items. Only accessible by the booking owner (matched via X-User-Id header).",
+        "operationId": "getBookingDetail",
+        "parameters": [
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": true,
+            "description": "User UUID (must be booking owner)",
+            "schema": {"type": "string", "format": "uuid"},
+            "example": "11111111-1111-1111-1111-111111111111"
+          },
+          {
+            "name": "bookingId",
+            "in": "path",
+            "required": true,
+            "description": "Booking UUID",
+            "schema": {"type": "string", "format": "uuid"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Booking found",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/BookingDetailResponse"},
+                "example": {
+                  "id": "d1234567-abcd-efgh-ijkl-000000000001",
+                  "status": "PENDING",
+                  "subtotalAmount": 4000000,
+                  "discountAmount": 0,
+                  "totalAmount": 4000000,
+                  "currency": "VND",
+                  "expiresAt": "2026-05-21T12:15:00",
+                  "items": [
+                    {
+                      "id": "e1234567-abcd-efgh-ijkl-000000000001",
+                      "ticketCategoryName": "VIP",
+                      "quantity": 2,
+                      "unitPriceAmount": 2000000,
+                      "totalAmount": 4000000
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {"description": "Booking not found or not owned by user"}
+        }
+      }
+    },
+    "/api/v1/admin/bookings": {
+      "get": {
+        "tags": ["Admin Booking"],
+        "summary": "List all bookings (admin)",
+        "description": "Returns paginated bookings with optional filters. Requires X-Role: ADMIN header.",
+        "operationId": "listBookingsAdmin",
+        "parameters": [
+          {
+            "name": "X-Role",
+            "in": "header",
+            "required": true,
+            "description": "Must be 'ADMIN'",
+            "schema": {"type": "string", "enum": ["ADMIN"]},
+            "example": "ADMIN"
+          },
+          {
+            "name": "concertId",
+            "in": "query",
+            "required": false,
+            "description": "Filter by concert UUID",
+            "schema": {"type": "string", "format": "uuid"}
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Filter by booking status",
+            "schema": {"type": "string", "enum": ["PENDING", "CONFIRMED", "CANCELLED", "FAILED", "EXPIRED"]}
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "integer", "default": 0}
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "integer", "default": 10}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bookings retrieved",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/PageAdminBookingResponse"},
+                "example": {
+                  "content": [
+                    {
+                      "id": "d1234567-abcd-efgh-ijkl-000000000001",
+                      "userId": "11111111-1111-1111-1111-111111111111",
+                      "concertId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                      "status": "PENDING",
+                      "subtotalAmount": 4000000,
+                      "discountAmount": 0,
+                      "totalAmount": 4000000,
+                      "currency": "VND",
+                      "expiresAt": "2026-05-21T12:15:00",
+                      "createdAt": "2026-05-21T12:00:00"
+                    }
+                  ],
+                  "page": 0,
+                  "size": 10,
+                  "totalElements": 1,
+                  "totalPages": 1,
+                  "last": true
+                }
+              }
+            }
+          },
+          "403": {"description": "Not an admin"}
+        }
+      }
+    },
+    "/api/v1/admin/bookings/{bookingId}/status": {
+      "patch": {
+        "tags": ["Admin Booking"],
+        "summary": "Cancel booking (admin)",
+        "description": "Admin cancels a PENDING or CONFIRMED booking. Releases tickets (voucher NOT restored).",
+        "operationId": "cancelBookingAdmin",
+        "parameters": [
+          {
+            "name": "X-Role",
+            "in": "header",
+            "required": true,
+            "schema": {"type": "string", "enum": ["ADMIN"]},
+            "example": "ADMIN"
+          },
+          {
+            "name": "bookingId",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string", "format": "uuid"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/UpdateBookingStatusRequest"},
+              "example": {
+                "status": "CANCELLED",
+                "reason": "Customer requested cancellation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Booking cancelled",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/BookingResponse"}
+              }
+            }
+          },
+          "400": {"description": "Invalid status transition"},
+          "403": {"description": "Not an admin"},
+          "404": {"description": "Booking not found"}
+        }
+      }
+    },
+    "/api/v1/webhooks/payments": {
+      "post": {
+        "tags": ["Webhook"],
+        "summary": "Payment webhook callback",
+        "description": "Called by payment gateway when transaction completes. Updates booking status to CONFIRMED (SUCCESS) or FAILED.",
+        "operationId": "paymentWebhook",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/PaymentWebhookRequest"},
+              "example": {
+                "bookingId": "d1234567-abcd-efgh-ijkl-000000000001",
+                "transactionId": "txn-20260521-001",
+                "status": "SUCCESS"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Payment processed",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/BookingResponse"}
+              }
+            }
+          },
+          "404": {"description": "Booking not found"}
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "timestamp": {"type": "string", "format": "date-time"},
+          "status": {"type": "integer"},
+          "error": {"type": "string"},
+          "message": {"type": "string"},
+          "path": {"type": "string"}
+        }
+      },
+      "ReserveBookingRequest": {
+        "type": "object",
+        "required": ["concertId", "items"],
+        "properties": {
+          "concertId": {"type": "string", "format": "uuid"},
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"$ref": "#/components/schemas/ReserveBookingItemRequest"}
+          },
+          "voucherCode": {"type": "string", "description": "Optional voucher code"}
+        }
+      },
+      "ReserveBookingItemRequest": {
+        "type": "object",
+        "required": ["ticketCategoryId", "quantity"],
+        "properties": {
+          "ticketCategoryId": {"type": "string", "format": "uuid"},
+          "quantity": {"type": "integer", "minimum": 1}
+        }
+      },
+      "UpdateBookingStatusRequest": {
+        "type": "object",
+        "required": ["status", "reason"],
+        "properties": {
+          "status": {"type": "string"},
+          "reason": {"type": "string"}
+        }
+      },
+      "PaymentWebhookRequest": {
+        "type": "object",
+        "required": ["bookingId", "transactionId", "status"],
+        "properties": {
+          "bookingId": {"type": "string", "format": "uuid"},
+          "transactionId": {"type": "string"},
+          "status": {"type": "string", "enum": ["SUCCESS", "FAILED"]}
+        }
+      },
+      "BookingResponse": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "status": {"type": "string"},
+          "subtotalAmount": {"type": "integer", "format": "int64"},
+          "discountAmount": {"type": "integer", "format": "int64"},
+          "totalAmount": {"type": "integer", "format": "int64"},
+          "currency": {"type": "string"},
+          "expiresAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "BookingDetailResponse": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "status": {"type": "string"},
+          "subtotalAmount": {"type": "integer", "format": "int64"},
+          "discountAmount": {"type": "integer", "format": "int64"},
+          "totalAmount": {"type": "integer", "format": "int64"},
+          "currency": {"type": "string"},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "items": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/BookingItemResponse"}
+          }
+        }
+      },
+      "BookingItemResponse": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "ticketCategoryName": {"type": "string"},
+          "quantity": {"type": "integer"},
+          "unitPriceAmount": {"type": "integer", "format": "int64"},
+          "totalAmount": {"type": "integer", "format": "int64"}
+        }
+      },
+      "AdminBookingResponse": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "userId": {"type": "string", "format": "uuid"},
+          "concertId": {"type": "string", "format": "uuid"},
+          "status": {"type": "string"},
+          "subtotalAmount": {"type": "integer", "format": "int64"},
+          "discountAmount": {"type": "integer", "format": "int64"},
+          "totalAmount": {"type": "integer", "format": "int64"},
+          "currency": {"type": "string"},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ConcertSummaryResponse": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string"},
+          "venue": {"type": "string"},
+          "startTime": {"type": "string", "format": "date-time"},
+          "endTime": {"type": "string", "format": "date-time"},
+          "status": {"type": "string"}
+        }
+      },
+      "ConcertDetailResponse": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "venue": {"type": "string"},
+          "startTime": {"type": "string", "format": "date-time"},
+          "endTime": {"type": "string", "format": "date-time"},
+          "status": {"type": "string"},
+          "ticketCategories": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/TicketCategoryResponse"}
+          }
+        }
+      },
+      "TicketCategoryResponse": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string"},
+          "priceAmount": {"type": "integer", "format": "int64"},
+          "currency": {"type": "string"},
+          "totalQuantity": {"type": "integer"},
+          "availableQuantity": {"type": "integer"},
+          "status": {"type": "string"}
+        }
+      },
+      "PageConcertSummaryResponse": {
+        "type": "object",
+        "properties": {
+          "content": {"type": "array", "items": {"$ref": "#/components/schemas/ConcertSummaryResponse"}},
+          "page": {"type": "integer"},
+          "size": {"type": "integer"},
+          "totalElements": {"type": "integer", "format": "int64"},
+          "totalPages": {"type": "integer"},
+          "last": {"type": "boolean"}
+        }
+      },
+      "PageAdminBookingResponse": {
+        "type": "object",
+        "properties": {
+          "content": {"type": "array", "items": {"$ref": "#/components/schemas/AdminBookingResponse"}},
+          "page": {"type": "integer"},
+          "size": {"type": "integer"},
+          "totalElements": {"type": "integer", "format": "int64"},
+          "totalPages": {"type": "integer"},
+          "last": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}
